@@ -1,0 +1,7 @@
+- id: saaf-quarantine
+  name: saaf-quarantine
+  description: Fail when an LLM prompt embeds document text that did not pass through quarantine()
+  entry: quarantine_check.py
+  language: script
+  pass_filenames: false
+  args: ["."]
