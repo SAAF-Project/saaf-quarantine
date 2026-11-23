@@ -3,6 +3,7 @@ name: saaf-quarantine
 repo: SAAF-Project/saaf-quarantine
 island: foundation
 maturity: building
+confirmed: false
 description: Offline prompt-boundary checker and runtime text wrapper for outside evidence.
 mandate:
   purpose: Offline prompt-boundary checker and runtime text wrapper for outside evidence.
