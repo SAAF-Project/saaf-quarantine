@@ -15,12 +15,20 @@ Run against the SAAF-Project repositories during the Security Challenge (10 Nove
 
 ## Run it
 
-Python 3.8 or newer, no install:
+Python 3.9 or newer; CI verifies Python 3.11 and 3.12 on Linux. No install required:
 
 ```bash
 python3 quarantine_check.py path/to/agent-repo      # exit 1 and file:line for every unquarantined prompt input
-python3 -m unittest discover -s tests              # self-test
+python3 -m unittest discover -s tests -v           # synthetic self-tests
+python3 demo.py                                   # offline fail/pass/incomplete demo
 ```
+
+Exit codes are **0** for a completed scan with no recognised hits, **1** for hits,
+and **2** for an incomplete scan. Missing paths, an empty supported-source scope,
+unreadable or non-UTF-8 files, malformed Python/notebooks and notebook magic/shell
+cells stay **not assessed**. Fix or separately review these inputs; do not convert
+exit 2 into success. A valid source tree with no recognised LLM use can return 0;
+that is not a claim that it is an agent or that it is secure.
 
 ## Add it to a SAAF repository
 
@@ -42,14 +50,14 @@ python3 -m unittest discover -s tests              # self-test
      contents: read
    jobs:
      quarantine:
-       uses: SAAF-Project/saaf-quarantine/.github/workflows/quarantine.yml@main
+       uses: SAAF-Project/saaf-quarantine/.github/workflows/quarantine.yml@ab50189794f13d46110c0adb08f86bbd8dede7f0
    ```
 
 3. Or run it as a pre-commit hook:
 
    ```yaml
    - repo: https://github.com/SAAF-Project/saaf-quarantine
-     rev: main
+     rev: ab50189794f13d46110c0adb08f86bbd8dede7f0
      hooks:
        - id: saaf-quarantine
    ```
@@ -63,3 +71,19 @@ A line you have reviewed and accept can carry the comment `quarantine: ignore <r
 - **Code only.** It does not read prompts that live only in Markdown skills or in Copilot Studio configuration. It also cannot wrap native PDF or image blocks sent as files.
 - **Regex for JS and TS.** Python and notebooks are parsed properly; JS and TS template literals are matched by pattern.
 - **One weakness class.** It does not cover authentication, model-output rendering, secrets or dependencies.
+
+## Evidence, dependencies and open decisions
+
+[agent.yaml](agent.yaml) describes scope, not runtime-enforced permissions.
+[AUDIT-CRITERIA.md](AUDIT-CRITERIA.md) links proposed criteria to synthetic tests;
+[DEPENDENCIES.md](DEPENDENCIES.md) records runtime and CI dependencies. Keep the
+original evidence separately: the wrapper deliberately removes control characters
+and spoofed tags. The historical challenge result above is not a live model evaluation.
+
+The reusable workflow checks caller code as data from a separate directory, uses
+a pinned checker revision and isolated Python, and restricts the requested path to
+the caller checkout. Reviewed ignores and existing wrapper names remain heuristic
+exceptions; an attacker can still hide flows from this static check.
+
+No operational owner, security contact or licence is assigned by this change.
+There is no LICENSE file at this revision; a rights decision is still required.

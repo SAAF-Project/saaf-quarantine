@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saaf-quarantine"
+version = "0.1.0"
+description = "Offline prompt-boundary checks and an untrusted text wrapper"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+saaf-quarantine = "quarantine_check:main"
+
+[tool.setuptools]
+py-modules = ["saaf_quarantine", "quarantine_check"]
