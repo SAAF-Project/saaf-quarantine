@@ -3,7 +3,7 @@
 
     python3 quarantine_check.py [--format text|github] PATH [PATH ...]
 
-Exit code 1 when anything is flagged. Silence a reviewed line with `quarantine: ignore <reason>`.
+Exit 0: completed, no hits; 1: hits; 2: incomplete or invalid scan. Silence a reviewed line with `quarantine: ignore <reason>`.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import pathlib
 import re
 import sys
@@ -67,6 +68,10 @@ PROMPT_WORDS = re.compile(
 NOT_PROMPT = re.compile(r"<(div|html|table|tr|td|span|style|head|body|svg)\b|\b(SELECT|INSERT|UPDATE)\s|className=", re.I)
 WRAPPER_NAME = re.compile(r"quarantine|untrusted|spotlight", re.I)
 SKIP_FILES = {"saaf_quarantine.py", "quarantine_check.py"}
+
+
+class ScanError(Exception):
+    """The requested source could not be fully assessed."""
 
 
 @dataclass(frozen=True)
@@ -277,25 +282,40 @@ class PythonScanner:
 
 
 def python_scanners(path: pathlib.Path, label: str) -> list[PythonScanner]:
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read(path)
     if path.suffix != ".ipynb":
         sources = [(label, text)]
     else:
         try:
-            cells = json.loads(text).get("cells", [])
-        except (json.JSONDecodeError, AttributeError):
-            return []
-        sources = [
-            (f"{label}#cell{n}", "\n".join("" if l.lstrip().startswith(("%", "!")) else l for l in "".join(c.get("source", [])).splitlines()))
-            for n, c in enumerate(cells, start=1)
-            if c.get("cell_type") == "code"
-        ]
+            notebook = json.loads(text)
+            cells = notebook["cells"]
+            if not isinstance(cells, list):
+                raise ValueError("cells must be a list")
+            sources = []
+            for n, cell in enumerate(cells, start=1):
+                if not isinstance(cell, dict) or "cell_type" not in cell:
+                    raise ValueError("invalid cell")
+                if cell["cell_type"] != "code":
+                    continue
+                source = cell["source"]
+                if isinstance(source, list) and all(isinstance(line, str) for line in source):
+                    source = "".join(source)
+                if not isinstance(source, str):
+                    raise ValueError("code source must be text")
+                # Notebook magics are outside this Python-only check's scope.
+                if any(line.lstrip().startswith(("%", "!")) for line in source.splitlines()):
+                    raise ValueError("notebook magic/shell cells need separate review")
+                sources.append((f"{label}#cell{n}", source))
+            if not sources:
+                raise ValueError("no Python code cells")
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ScanError(f"{label}: invalid or unsupported notebook ({exc})") from exc
     scanners = []
     for name, source in sources:
         try:
             scanners.append(PythonScanner(source, name))
-        except (SyntaxError, ValueError):
-            print(f"{name}: skipped, does not parse", file=sys.stderr)
+        except (SyntaxError, ValueError) as exc:
+            raise ScanError(f"{name}: Python does not parse") from exc
     return scanners
 
 
@@ -307,7 +327,7 @@ JS_SAFE = re.compile(r"\.(length|size)\s*$|^\s*(String|Number)\(")
 
 
 def script_hits(path: pathlib.Path, label: str) -> list[Hit]:
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read(path)
     lines = text.splitlines()
     found = []
 
@@ -336,17 +356,40 @@ SCRIPT_SUFFIXES = {".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"}
 
 
 def read(path: pathlib.Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ScanError(f"{path}: source could not be read as UTF-8") from exc
 
 
 def scan(root: pathlib.Path) -> list[Hit]:
+    if not root.exists():
+        raise ScanError(f"{root}: path does not exist")
+    if root.is_symlink():
+        raise ScanError(f"{root}: symlink targets need an explicit reviewed path")
     files = []
-    for path in [root] if root.is_file() else sorted(root.rglob("*")):
+    paths = [root]
+    if root.is_dir():
+        paths = []
+        def walk_error(error):
+            raise ScanError(f"{root}: directory traversal failed") from error
+        for directory, dirs, names in os.walk(root, onerror=walk_error, followlinks=False):
+            # Reject symlinked source directories rather than silently missing their code.
+            for name in dirs:
+                child = pathlib.Path(directory) / name
+                if name not in SKIP_DIRS and child.is_symlink():
+                    raise ScanError(f"{child}: symlink directory is not assessed")
+            dirs[:] = sorted(name for name in dirs if name not in SKIP_DIRS)
+            paths.extend(pathlib.Path(directory) / name for name in sorted(names))
+    for path in paths:
         relative = path.relative_to(root) if root.is_dir() else pathlib.Path(path.name)
         skipped = path.name in SKIP_FILES or TEST_FILE.search(path.name) or SKIP_DIRS & set(relative.parts)
-        if path.is_file() and not skipped:
-            if path.suffix in PYTHON_SUFFIXES | SCRIPT_SUFFIXES:
-                files.append((path, str(relative) if root.is_dir() else str(path)))
+        if not skipped and path.suffix in PYTHON_SUFFIXES | SCRIPT_SUFFIXES:
+            if path.is_symlink() or not path.is_file():
+                raise ScanError(f"{path}: source is not a regular file")
+            files.append((path, str(relative) if root.is_dir() else str(path)))
+    if not files:
+        raise ScanError(f"{root}: no supported source files in scan scope")
     python = [s for path, label in files if path.suffix in PYTHON_SUFFIXES for s in python_scanners(path, label)]
     scripts = [(path, label) for path, label in files if path.suffix in SCRIPT_SUFFIXES]
     # Agents often build prompts in one module and call the model through a shared client in another,
@@ -368,15 +411,25 @@ def main() -> int:
     parser.add_argument("paths", nargs="+", type=pathlib.Path)
     parser.add_argument("--format", choices=["text", "github"], default="text")
     args = parser.parse_args()
-    hits = [hit for root in args.paths for hit in scan(root)]
+    hits, errors = [], []
+    for root in args.paths:
+        try:
+            hits.extend(scan(root))
+        except ScanError as exc:
+            errors.append(str(exc))
+    def escape(value, property=False):
+        value = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        return value.replace(":", "%3A").replace(",", "%2C") if property else value
+    for error in errors:
+        print(f"saaf-quarantine: NOT ASSESSED: {escape(error)}", file=sys.stderr)
     for hit in hits:
         message = f"'{hit.expression}' reaches an LLM prompt without quarantine()"
         if args.format == "github":
-            print(f"::error file={hit.path},line={hit.line},title=saaf-quarantine::{message}")
+            print(f"::error file={escape(hit.path, True)},line={hit.line},title=saaf-quarantine::{escape(message)}")
         else:
             print(f"{hit.path}:{hit.line}: {message}")
     print(f"saaf-quarantine: {len(hits)} unquarantined prompt input(s)", file=sys.stderr)
-    return 1 if hits else 0
+    return 2 if errors else 1 if hits else 0
 
 
 if __name__ == "__main__":

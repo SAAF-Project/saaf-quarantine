@@ -1,0 +1,19 @@
+# Declarative Living Map description; not a runtime permission engine.
+name: saaf-quarantine
+repo: SAAF-Project/saaf-quarantine
+island: foundation
+maturity: building
+description: Offline prompt-boundary checker and runtime text wrapper for outside evidence.
+mandate:
+  purpose: Offline prompt-boundary checker and runtime text wrapper for outside evidence.
+  allowed_tools: [read_source_files, write_console_findings, wrap_input_text]
+  forbidden_actions:
+    - action: execute_reviewed_source
+      rationale: Source under review is untrusted data and must not run during a scan.
+    - action: call_model_or_external_service
+      rationale: These checks and synthetic demos run offline without provider credentials.
+    - action: change_own_config
+      rationale: Changes to rules and this mandate require a reviewed pull request.
+  trusted_inputs: [reviewed_checker_revision]
+  human_approval_required_for: [accepting_findings_for_release, changing_gate_exceptions]
+  evidence_policy: cite_only_given_context
